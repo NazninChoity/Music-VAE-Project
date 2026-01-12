@@ -61,3 +61,51 @@ class AudioFeatureDataset(Dataset):
         else:
             raise ValueError("feature_type must be 'mfcc' or 'mel_spec'")
         return x, label
+
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+
+class AudioLyricsHybridDataset(Dataset):
+    def __init__(self, audio_root, lyrics_root, feature_type='mfcc', tfidf_max_features=256, **audio_kwargs):
+        """
+        Expects parallel structure:
+        audio_root/genres/<genre>/<file>.wav
+        lyrics_root/genres/<genre>/<file>.txt
+        """
+        self.audio_ds = AudioFeatureDataset(audio_root, feature_type=feature_type, **audio_kwargs)
+        # Build lyrics corpus aligned by file order
+        self.lyrics_paths = []
+        genres_path = os.path.join(lyrics_root, 'genres')
+        for genre in sorted(os.listdir(genres_path)):
+            genre_path = os.path.join(genres_path, genre)
+            if not os.path.isdir(genre_path):
+                continue
+            files = sorted([f for f in os.listdir(genre_path) if f.endswith('.txt')])
+            for f in files:
+                self.lyrics_paths.append(os.path.join(genre_path, f))
+
+        # Load texts (assumes same ordering as audio_ds.file_paths)
+        texts = []
+        for p in self.lyrics_paths[:len(self.audio_ds.file_paths)]:
+            try:
+                with open(p, 'r', encoding='utf-8') as fh:
+                    texts.append(fh.read())
+            except:
+                texts.append("")
+        self.vectorizer = TfidfVectorizer(max_features=tfidf_max_features)
+        self.tfidf = self.vectorizer.fit_transform(texts).toarray().astype(np.float32)
+
+    def __len__(self):
+        return len(self.audio_ds)
+
+    def __getitem__(self, idx):
+        x_audio, label = self.audio_ds[idx]
+        x_lyrics = self.tfidf[idx]
+        if x_audio.ndim == 1:
+            # MFCC vector + TF-IDF vector
+            x = np.concatenate([x_audio.astype(np.float32), x_lyrics], axis=0)
+        else:
+            # Spectrogram (64,128) + TF-IDF: return tuple to handle separately
+            x = (x_audio.astype(np.float32), x_lyrics)
+        return x, label
+
