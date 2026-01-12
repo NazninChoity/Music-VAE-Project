@@ -21,6 +21,10 @@ class VAE(nn.Module):
         return self.decode(z), mu, logvar
 
 
+
+import torch
+import torch.nn as nn
+
 class ConvVAE(nn.Module):
     def __init__(self, in_channels=1, latent_dim=32):
         super().__init__()
@@ -71,3 +75,4 @@ class ConvVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         x_hat = self.decode(z)
         return x_hat, mu, logvar
+
