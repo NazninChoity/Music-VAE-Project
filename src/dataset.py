@@ -1,7 +1,10 @@
 import os
-import librosa
+import torch
 import numpy as np
+import librosa
 from torch.utils.data import Dataset
+from sklearn.feature_extraction.text import TfidfVectorizer
+
 
 class AudioFeatureDataset(Dataset):
     def __init__(self, root_dir, feature_type='mfcc', n_mfcc=20, sr=22050, n_fft=1024, hop_length=512):
@@ -108,4 +111,58 @@ class AudioLyricsHybridDataset(Dataset):
             # Spectrogram (64,128) + TF-IDF: return tuple to handle separately
             x = (x_audio.astype(np.float32), x_lyrics)
         return x, label
+
+class HybridFeatureDataset(torch.utils.data.Dataset):
+    def __init__(self, audio_dir, lyrics_dir, feature_type='mfcc', n_mfcc=20, max_len=130, tfidf_dim=256):
+        self.audio_dir = audio_dir
+        self.lyrics_dir = lyrics_dir
+        self.feature_type = feature_type
+        self.n_mfcc = n_mfcc
+        self.max_len = max_len
+
+        # Collect audio + lyrics file paths (assumes same filenames but different extensions)
+        self.audio_files = sorted([f for f in os.listdir(audio_dir) if f.endswith('.wav')])
+        self.lyrics_files = sorted([f for f in os.listdir(lyrics_dir) if f.endswith('.txt')])
+
+        # Build TF-IDF vectorizer on all lyrics
+        texts = []
+        for fname in self.lyrics_files:
+            with open(os.path.join(lyrics_dir, fname), 'r', encoding='utf-8') as f:
+                texts.append(f.read())
+        self.vectorizer = TfidfVectorizer(max_features=tfidf_dim)
+        self.lyrics_matrix = self.vectorizer.fit_transform(texts).toarray()
+
+    def __len__(self):
+        return len(self.audio_files)
+
+    def __getitem__(self, idx):
+        # --- Audio features ---
+        audio_path = os.path.join(self.audio_dir, self.audio_files[idx])
+        y, sr = librosa.load(audio_path, sr=None)
+
+        if self.feature_type == 'mfcc':
+            feat = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=self.n_mfcc)
+        elif self.feature_type == 'mel_spec':
+            feat = librosa.feature.melspectrogram(y=y, sr=sr, n_mels=64)
+            feat = librosa.power_to_db(feat, ref=np.max)
+        else:
+            raise ValueError("Unsupported feature type")
+
+        # Pad/truncate to fixed length
+        if feat.shape[1] > self.max_len:
+            feat = feat[:, :self.max_len]
+        else:
+            pad_width = self.max_len - feat.shape[1]
+            feat = np.pad(feat, ((0,0),(0,pad_width)), mode='constant')
+
+        audio_feat = torch.tensor(feat, dtype=torch.float32).flatten()
+
+        # --- Lyrics features ---
+        lyrics_feat = torch.tensor(self.lyrics_matrix[idx], dtype=torch.float32)
+
+        # --- Hybrid concatenation ---
+        hybrid_feat = torch.cat([audio_feat, lyrics_feat], dim=0)
+
+        return hybrid_feat, 0  # label=0 (unsupervised)
+
 
